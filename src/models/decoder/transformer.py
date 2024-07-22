@@ -61,6 +61,16 @@ class BasicTransformerBlock(nn.Module):
         x = x + self.self_attn(before_sa, before_sa, before_sa)[0]
         x = x + self.mlp(self.norm3(x))
         return x
+    
+    def forward_mask(self, x, cond, mask):
+        # x: [N, L, D]
+        # cond: [N, L_cond, D_cond]
+        x = x + self.cross_attn(self.norm1(x), cond, cond, key_padding_mask=mask)[0]
+        before_sa = self.norm2(x)
+        x = x + self.self_attn(before_sa, before_sa, before_sa)[0]
+        x = x + self.mlp(self.norm3(x))
+        return x
+
 
 
 class TriplaneTransformer(nn.Module):
@@ -121,3 +131,54 @@ class TriplaneTransformer(nn.Module):
         x = x.contiguous()
 
         return x
+    
+    def forward_mask(self, image_feats, mask):
+        N = image_feats.shape[0]
+        H = W = self.triplane_low_res
+        L = 3 * H * W
+
+        x = self.pos_embed.repeat(N, 1, 1)  # [N, L, D]
+        for layer in self.layers:
+            x = layer.forward_mask(x, image_feats, mask)
+        x = self.norm(x)
+
+        # separate each plane and apply deconv
+        x = x.view(N, 3, H, W, -1)
+        x = torch.einsum('nihwd->indhw', x)  # [3, N, D, H, W]
+        x = x.contiguous().view(3*N, -1, H, W)  # [3*N, D, H, W]
+        x = self.deconv(x)  # [3*N, D', H', W']
+        x = x.view(3, N, *x.shape[-3:])  # [3, N, D', H', W']
+        x = torch.einsum('indhw->nidhw', x)  # [N, 3, D', H', W']
+        x = x.contiguous()
+
+        return x
+
+    
+    def forward_lowTriplane(self, image_feats):
+        N = image_feats.shape[0]
+        H = W = self.triplane_low_res
+        L = 3 * H * W
+
+        x = self.pos_embed.repeat(N, 1, 1)  # [N, L, D]
+        for layer in self.layers:
+            x = layer(x, image_feats)
+        x = self.norm(x)
+
+        # separate each plane and apply deconv
+        x = x.view(N, 3, H, W, -1)
+        return x
+    
+    def foward_low2highTriplane(self, x):
+        # x : [N, 3, D, H, W]
+        N = x.shape[0]
+        H = W = self.triplane_low_res 
+        x = torch.einsum('nihwd->indhw', x)  # [3, N, D, H, W]
+        x = x.contiguous().view(3*N, -1, H, W)  # [3*N, D, H, W]
+        x = self.deconv(x)  # [3*N, D', H', W']
+        x = x.view(3, N, *x.shape[-3:])  # [3, N, D', H', W']
+        x = torch.einsum('indhw->nidhw', x)  # [N, 3, D', H', W']
+        x = x.contiguous()
+        return x
+
+    
+

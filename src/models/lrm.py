@@ -79,6 +79,15 @@ class InstantNeRF(nn.Module):
 
         return planes
     
+    def forward_lowplanes(self, images, cameras):
+        B = images.shape[0]
+        image_feats = self.encoder(images, cameras)
+        image_feats = rearrange(image_feats , '(b v) l d -> b (v l) d', b=B)
+
+        lowplanes = self.transformer.forward_lowTriplane(image_feats)
+
+        return lowplanes
+    
     def forward_synthesizer(self, planes, render_cameras, render_size: int):
         render_results = self.synthesizer(
             planes, 
@@ -86,6 +95,21 @@ class InstantNeRF(nn.Module):
             render_size,
         )
         return render_results
+
+    def forward_planes_mask(self, images, cameras, mask):
+        B = images.shape[0]
+        image_feats = self.encoder(images, cameras)
+        image_feats = rearrange(image_feats, '(b v) l d -> b (v l) d', b=B)
+        patch_size = self.encoder.model.embeddings.config.patch_size
+        temp = torch.nn.functional.max_pool2d(mask, patch_size, stride = patch_size)
+        temp[0,2]
+        token_mask = torch.nn.functional.max_pool2d(mask, patch_size, stride = patch_size).flatten(2)
+        cls_mask = torch.zeros_like(token_mask[:, :, :1])
+        token_mask = torch.cat([cls_mask, token_mask], dim = 2)
+        token_mask = rearrange(token_mask, 'b v l -> b (v l)',  b=B)
+        token_mask = token_mask.type(torch.bool)
+        planes = self.transformer.forward_mask(image_feats, token_mask )
+        return planes
 
     def forward(self, images, cameras, render_cameras, render_size: int):
         # images: [B, V, C_img, H_img, W_img]
